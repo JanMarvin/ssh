@@ -1,77 +1,151 @@
-# Anticonf (tm) script by Jeroen Ooms (2020)
-# This script will query 'pkg-config' for the required cflags and ldflags.
-# If pkg-config is unavailable or does not find the library, try setting
-# INCLUDE_DIR and LIB_DIR manually via e.g:
-# R CMD INSTALL --configure-vars='INCLUDE_DIR=/.../include LIB_DIR=/.../lib'
+#!/bin/sh
 
-# Library settings
-PKG_CONFIG_NAME="libssh"
-PKG_DEB_NAME="libssh-dev"
-PKG_RPM_NAME="libssh-devel"
-PKG_BREW_NAME="libssh"
-PKG_TEST_HEADER="<libssh/libssh.h>"
-PKG_LIBS_STATIC="-lssh -lcrypto -lz -lkrb5"
-PKG_LIBS="-lssh"
-PKG_CFLAGS=""
+# configure script for R package with static libssh
+# This script uses standard POSIX shell commands (sh) for broader compatibility.
 
-# Use pkg-config if available
-if [ $(command -v pkg-config) ]; then
-  PKGCONFIG_CFLAGS=$(pkg-config --cflags --silence-errors ${PKG_CONFIG_NAME})
-  PKGCONFIG_LIBS=$(pkg-config --libs ${PKG_CONFIG_NAME})
+# --- Configuration Variables ---
+# IMPORTANT: DOUBLE-CHECK THIS EXACT SPELLING AGAINST YOUR ACTUAL DIRECTORY NAME ON DISK!
+# It must be "libssh-0.11.2" if that's the folder name.
+LIBSSH_SOURCE_DIR="libssh-0.11.2"
+
+# Define the build directory for libssh within the R package's src/
+LIBSSH_BUILD_DIR="src/${LIBSSH_SOURCE_DIR}/build"
+LIBSSH_INSTALL_DIR="src/${LIBSSH_SOURCE_DIR}/install" # This directory is configured for, but not used by 'make install' in this script
+
+# Paths for the Makevars template and output file
+MAKEVARS_IN_PATH="src/Makevars.in"
+MAKEVARS_OUT_PATH="src/Makevars"
+
+# --- Check for necessary tools ---
+echo "Checking for build tools..."
+# Use 'command -v' for POSIX-compliant tool checking
+if ! command -v cmake >/dev/null 2>&1; then
+    echo "Error: cmake not found. Please install CMake."
+    exit 1
 fi
+echo "cmake found."
 
-# Note that cflags may be empty in case of success
-if [ "$INCLUDE_DIR" ] || [ "$LIB_DIR" ]; then
-  echo "Found INCLUDE_DIR and/or LIB_DIR!"
-  PKG_CFLAGS="-I$INCLUDE_DIR $PKG_CFLAGS"
-  PKG_LIBS="-L$LIB_DIR $PKG_LIBS"
-elif [ "$PKGCONFIG_CFLAGS" ] || [ "$PKGCONFIG_LIBS" ]; then
-  echo "Found pkg-config cflags and libs!"
-  PKG_CFLAGS=${PKGCONFIG_CFLAGS}
-  PKG_LIBS=${PKGCONFIG_LIBS}
-elif [ `uname` = "Darwin" ]; then
-  test ! "$CI" && brew --version 2>/dev/null
-  if [ $? -eq 0 ]; then
-    BREWDIR=$(brew --prefix)
-    PKG_CFLAGS="-I$BREWDIR/include"
-    PKG_LIBS="-L$BREWDIR/lib -L$BREWDIR/opt/openssl/lib $PKG_LIBS"
-  else
-    curl -sfL "https://autobrew.github.io/scripts/libssh" > autobrew
-    . ./autobrew
-  fi
-fi
+# --- Determine OS and Architecture ---
+OS_TYPE=$(uname -s)
+ARCH_TYPE=$(uname -m)
 
-# For debugging
-echo "Using PKG_CFLAGS=$PKG_CFLAGS"
-echo "Using PKG_LIBS=$PKG_LIBS"
+echo "Detected OS: ${OS_TYPE}, Architecture: ${ARCH_TYPE}"
 
-# Find compiler
-CC=$(${R_HOME}/bin/R CMD config CC)
-CFLAGS=$(${R_HOME}/bin/R CMD config CFLAGS)
-CPPFLAGS=$(${R_HOME}/bin/R CMD config CPPFLAGS)
+# --- Build libssh statically ---
+echo "Configuring and building libssh static library..."
 
-# Test configuration
-echo "#include $PKG_TEST_HEADER" | ${CC} ${CPPFLAGS} ${PKG_CFLAGS} ${CFLAGS} -E -xc - >/dev/null 2>configure.log
+# --- Find OpenSSL installation (via Homebrew) ---
+OPENSSL_PREFIX=$(brew --prefix openssl@3 2>/dev/null)
 
-# Customize the error
-if [ $? -ne 0 ]; then
-  echo "---------------------------- [ANTICONF] --------------------------------"
-  echo "Configuration failed because $PKG_CONFIG_NAME was not found. Try installing:"
-  echo " * deb: $PKG_DEB_NAME (Debian, Ubuntu, etc)"
-  echo " * rpm: $PKG_RPM_NAME (Fedora, EPEL)"
-  echo " * brew: $PKG_BREW_NAME (OSX)"
-  echo "If $PKG_CONFIG_NAME is already installed, check that 'pkg-config' is in your"
-  echo "PATH and PKG_CONFIG_PATH contains a $PKG_CONFIG_NAME.pc file. If pkg-config"
-  echo "is unavailable you can set INCLUDE_DIR and LIB_DIR manually via:"
-  echo "R CMD INSTALL --configure-vars='INCLUDE_DIR=... LIB_DIR=...'"
-  echo "-------------------------- [ERROR MESSAGE] ------------------------------"
-  cat configure.log
-  echo "-------------------------------------------------------------------------"
+if [ -z "$OPENSSL_PREFIX" ]; then
+  echo "Error: OpenSSL (openssl@3) not found via Homebrew. Please install it using:"
+  echo "       brew install openssl@3"
   exit 1
 fi
 
-# Write to Makevars
-sed -e "s|@cflags@|$PKG_CFLAGS|" -e "s|@libs@|$PKG_LIBS|" src/Makevars.in > src/Makevars
+echo "Found OpenSSL in: ${OPENSSL_PREFIX}"
 
-# Success
+
+# Clean previous build artifacts if they exist
+# Use -rf for recursive force removal
+rm -rf "${LIBSSH_BUILD_DIR}" || { echo "Error: Failed to remove existing libssh build directory."; exit 1; }
+
+# Create the build directory (like mkdir -p)
+mkdir -p "${LIBSSH_BUILD_DIR}" || { echo "Error: Failed to create libssh build directory."; exit 1; }
+
+# Determine the absolute path for CMake's install prefix
+# This needs to be an absolute path as CMake will use it directly.
+CMAKE_INSTALL_PREFIX_ABS=$(pwd -P)/"${LIBSSH_INSTALL_DIR}"
+
+
+# CMake command to configure libssh for static build
+# IMPORTANT: When running cmake from within LIBSSH_BUILD_DIR, the source directory
+# is simply '../' (one level up). This is simpler and avoids path calculation errors.
+# -DCMAKE_INSTALL_PREFIX: Where libssh will be "installed" after building (within your package)
+# -DBUILD_SHARED_LIBS=OFF: Crucial for static build
+# -DWITH_STATIC_LIB=ON: Explicitly enable static library build (often implied by BUILD_SHARED_LIBS=OFF)
+# -DWITH_EXAMPLES=OFF: Disable examples to reduce build size/time
+# -DWITH_GSSAPI=OFF: Often simplifies linking if GSSAPI is not needed
+(
+    # Change directory for cmake command
+    cd "${LIBSSH_BUILD_DIR}" || { echo "Error: Cannot change to libssh build directory."; exit 1; }
+    cmake ../ \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DWITH_EXAMPLES=OFF \
+        -DWITH_GSSAPI=OFF \
+        -DCMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX_ABS}" \
+        || { echo "Error: CMake configuration for libssh failed."; exit 1; }
+)
+
+# Build libssh
+(
+    # Change directory for make command
+    cd "${LIBSSH_BUILD_DIR}" || { echo "Error: Cannot change to libssh build directory for make."; exit 1; }
+    make || { echo "Error: libssh compilation failed."; exit 1; }
+)
+
+echo "libssh static library built successfully."
+
+# --- Determine paths for Makevars.in substitution ---
+# Path to libssh's static library file (typically in build/src/libssh.a)
+LIBSSH_STATIC_LIB="${LIBSSH_SOURCE_DIR}/build/src/libssh.a"
+
+# Path to libssh's primary headers (from source tree)
+LIBSSH_INCLUDE_PATH="$(pwd -P)/src/${LIBSSH_SOURCE_DIR}/include"
+
+# NEW: Path to libssh's generated headers (from build tree)
+# This is where libssh_version.h is typically found.
+LIBSSH_GENERATED_INCLUDE_PATH="$(pwd -P)/src/${LIBSSH_SOURCE_DIR}/build/src"
+
+
+# Determine system-specific libraries for linking
+# These are common dependencies for libssh.
+COMMON_LIBS="-lssl -lcrypto -lz -lpthread -ldl"
+PLATFORM_LIBS=""
+
+case "${OS_TYPE}" in
+    "Darwin") # macOS
+        # For macOS, libssh typically links against system OpenSSL/LibreSSL and zlib.
+        PLATFORM_LIBS="-Wl,-force_load,${LIBSSH_STATIC_LIB} -L${OPENSSL_PREFIX}/lib -lpthread"
+        ;;
+    "Linux")
+        PLATFORM_LIBS="${COMMON_LIBS}"
+        ;;
+    "MINGW"|"MSYS"|"CYGWIN"|"Windows_NT") # Windows (via Rtools/MinGW or native Windows)
+        # On Windows, linking static libraries is different.
+        # This is a placeholder and would need significant adjustment for Windows.
+        PLATFORM_LIBS="-lssh -lws2_32 -lcrypt32 -lz" # Example for Windows, needs verification
+        ;;
+    *)
+        echo "Warning: Unrecognized OS type '${OS_TYPE}'. Using generic linking flags."
+        PLATFORM_LIBS="${COMMON_LIBS}"
+        ;;
+esac
+
+# --- Generate src/Makevars from src/Makevars.in ---
+echo "Generating src/Makevars..."
+
+# Use sed for stream editing to replace placeholders
+# Ensure src/Makevars.in exists
+if [ ! -f "${MAKEVARS_IN_PATH}" ]; then
+    echo "Error: The template file '${MAKEVARS_IN_PATH}' was not found. Please ensure 'src/Makevars.in' exists."
+    exit 1
+fi
+
+sed -e "s|@LIBSSH_INCLUDE_PATH@|${LIBSSH_INCLUDE_PATH}|g" \
+    -e "s|@LIBSSH_STATIC_LIB@|${LIBSSH_STATIC_LIB}|g" \
+    -e "s|@PLATFORM_LIBS@|${PLATFORM_LIBS}|g" \
+    -e "s|@LIBSSH_GENERATED_INCLUDE_PATH@|${LIBSSH_GENERATED_INCLUDE_PATH}|g" \
+    "${MAKEVARS_IN_PATH}" > "${MAKEVARS_OUT_PATH}" || { echo "Error: Failed to generate src/Makevars."; exit 1; }
+
+echo "src/Makevars generated successfully."
+echo "Configure script finished."
+
+# --- Diagnostic Step: Print generated Makevars content ---
+echo ""
+echo "--- Contents of generated src/Makevars ---"
+cat "${MAKEVARS_OUT_PATH}"
+echo "------------------------------------------"
+
 exit 0

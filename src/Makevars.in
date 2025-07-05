@@ -1,8 +1,35 @@
-PKG_CPPFLAGS=@cflags@
-PKG_CFLAGS = $(C_VISIBILITY)
-PKG_LIBS=@libs@
+.PHONY: all clean
 
-all: $(SHLIB) cleanup
+# Detect R_HOME
+R_HOME ?= $(shell R RHOME)
 
-cleanup: $(SHLIB)
-	@rm -Rf ../.deps
+# Use R's configured compiler and archiver
+CC := $(shell $(R_HOME)/bin/R CMD config CC)
+AR := $(shell $(R_HOME)/bin/R CMD config AR)
+
+# Get R include directory
+R_INCLUDE := $(shell $(R_HOME)/bin/R CMD config --cppflags)
+
+# Source files
+SSH_SOURCES = command.c init.c scp.c session.c tunnel.c writer.c
+SSH_OBJECTS = $(SSH_SOURCES:.c=.o)
+
+# Static library output
+LIB_SSH_CODE = ssh.a
+
+# Flags
+PKG_CPPFLAGS = $(R_INCLUDE) -Ilibssh-0.11.2/include -Ilibssh-0.11.2/build/include
+PKG_LIBS = $(LIB_SSH_CODE) $(LIBSSH_STATIC_LIB) @PLATFORM_LIBS@ -lz -lcrypto -lssl -ldl -pthread
+
+all: $(LIB_SSH_CODE)
+
+$(LIB_SSH_CODE): $(SSH_OBJECTS)
+	@echo "--- Archiving into $(LIB_SSH_CODE) ---"
+	$(AR) rcs $(LIB_SSH_CODE) $(SSH_OBJECTS)
+	@echo "--- Done ---"
+
+%.o: %.c
+	$(CC) $(PKG_CPPFLAGS) -c $< -o $@
+
+clean:
+	-rm -f $(LIB_SSH_CODE) $(SSH_OBJECTS)

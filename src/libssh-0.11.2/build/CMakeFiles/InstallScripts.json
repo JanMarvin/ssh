@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/janmarvingarbuszus/Source/ssh/src/libssh-0.11.2/build/cmake_install.cmake",
+		"/Users/janmarvingarbuszus/Source/ssh/src/libssh-0.11.2/build/doc/cmake_install.cmake",
+		"/Users/janmarvingarbuszus/Source/ssh/src/libssh-0.11.2/build/include/cmake_install.cmake",
+		"/Users/janmarvingarbuszus/Source/ssh/src/libssh-0.11.2/build/include/libssh/cmake_install.cmake",
+		"/Users/janmarvingarbuszus/Source/ssh/src/libssh-0.11.2/build/src/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -9,7 +9,9 @@ Description: Connect to a remote server over SSH to transfer files via SCP,
     streaming stdout and stderr directly to the client.
 License: MIT + file LICENSE
 Encoding: UTF-8
-SystemRequirements: libssh >= 0.6.0 (the original, not libssh2)
+SystemRequirements:
+    CMake (>= 3.10), 
+    OpenSSL (>= 1.1)
 RoxygenNote: 7.1.1
 Roxygen: list(markdown = TRUE)
 Imports: 

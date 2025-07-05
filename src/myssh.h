@@ -4,6 +4,8 @@
 #include <Rinternals.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define LIBSSH_STATIC 1
 #include <libssh/libssh.h>
 #include <libssh/callbacks.h>
 
