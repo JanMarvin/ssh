@@ -31,6 +31,20 @@ echo "cmake found."
 OS_TYPE=$(uname -s)
 ARCH_TYPE=$(uname -m)
 
+# required for R 4.1
+CC=$(${R_HOME}/bin/R.exe CMD config CC).exe
+RTOOLS_MINGW_ROOT=$(dirname "$(dirname "$CC")")
+
+export CC
+export ZLIB_ROOT
+
+echo "Rtools MinGW Root: $RTOOLS_MINGW_ROOT"
+
+# Set ZLIB_ROOT for CMake, assuming it's within RTOOLS_MINGW_ROOT
+ZLIB_ROOT="$RTOOLS_MINGW_ROOT"
+
+echo "ZLIB_ROOT set to: $ZLIB_ROOT"
+
 echo "Detected OS: ${OS_TYPE}, Architecture: ${ARCH_TYPE}"
 
 # --- Find OpenSSL installation (for Windows) ---
@@ -79,6 +93,8 @@ CMAKE_INSTALL_PREFIX_ABS=$(pwd -P)/"${LIBSSH_INSTALL_DIR}"
 # -DWITH_GSSAPI=OFF: Often simplifies linking if GSSAPI is not needed
 # -DOPENSSL_ROOT_DIR: Tell CMake where to find OpenSSL
 (
+
+		# -DCMAKE_C_COMPILER=${CC} \
     # Change directory for cmake command
     cd "${LIBSSH_BUILD_DIR}" || { echo "Error: Cannot change to libssh build directory."; exit 1; }
     cmake.exe ../ \
