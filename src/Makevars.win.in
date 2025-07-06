@@ -1,0 +1,14 @@
+
+# Flags
+PKG_CPPFLAGS = -DOPENSSL_SUPPRESS_DEPRECATED -DSTRICT_R_HEADERS -DR_NO_REMAP -DLIBSSH_STATIC -Ilibssh-0.11.2/include -Ilibssh-0.11.2/build/include
+PKG_LIBS = @PLATFORM_LIBS@ -Llibssh-0.11.2/build/src -lssh -lpthread -liphlpapi
+
+all: $(SHLIB)
+
+$(SHLIB): $(OBJECTS)
+
+# Clean target to remove compiled artifacts
+clean:
+		rm -f $(SHLIB) $(OBJECTS)
+
+.PHONY: all clean

@@ -1,6 +1,7 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
 ^src/Makevars$
+^src/libssh-0.11.2/build$
 \.yml$
 ^windows
 \.Rmdin$

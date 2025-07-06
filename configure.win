@@ -1,0 +1,160 @@
+#!/bin/bash
+# configure.win script for R package with static libssh on Windows
+# This script uses standard POSIX shell commands (sh) for broader compatibility
+# within environments like Rtools, MSYS2, or Git Bash on Windows.
+
+# --- Configuration Variables ---
+# IMPORTANT: DOUBLE-CHECK THIS EXACT SPELLING AGAINST YOUR ACTUAL DIRECTORY NAME ON DISK!
+# It must be "libssh-0.11.2" if that's the folder name.
+LIBSSH_SOURCE_DIR="libssh-0.11.2"
+
+# Define the build directory for libssh within the R package's src/
+LIBSSH_BUILD_DIR="src/${LIBSSH_SOURCE_DIR}/build"
+# This directory is configured for, but not strictly used by 'make install' in this script
+LIBSSH_INSTALL_DIR="src/${LIBSSH_SOURCE_DIR}/install"
+
+# Paths for the Makevars template and output file
+MAKEVARS_IN_PATH="src/Makevars.win.in"
+MAKEVARS_OUT_PATH="src/Makevars.win" # Output to Makevars.win for Windows builds
+
+# --- Check for necessary tools ---
+echo "Checking for build tools..."
+# Use 'command -v' for POSIX-compliant tool checking
+if ! command -v cmake >/dev/null 2>&1; then
+    echo "Error: cmake not found. Please install CMake and ensure it's in your PATH."
+    exit 1
+fi
+echo "cmake found."
+
+# --- Determine OS and Architecture ---
+# On Windows, uname -s can return MINGW64_NT, MSYS_NT, CYGWIN_NT, etc.
+OS_TYPE=$(uname -s)
+ARCH_TYPE=$(uname -m)
+
+echo "Detected OS: ${OS_TYPE}, Architecture: ${ARCH_TYPE}"
+
+# --- Find OpenSSL installation (for Windows) ---
+# For Rtools environments, OpenSSL is typically bundled with MinGW.
+# We assume OpenSSL is found in R_HOME/mingw_64 for MinGW-w64 toolchain.
+# If this path is incorrect for your specific Rtools setup, you might need to adjust it
+# or provide OPENSSL_ROOT_DIR manually via R CMD INSTALL --configure-vars.
+OPENSSL_PREFIX="${R_HOME}/mingw_64"
+
+# Verify if the expected OpenSSL include directory exists as a sanity check
+if [ ! -d "${OPENSSL_PREFIX}/include/openssl" ]; then
+  echo "OpenSSL headers not found, falling back to building bundled windows/libssl..."
+  OPENSSL_PREFIX="$(pwd -P)/windows/libssl"
+
+  # Trigger the download/build of libssl via R script
+  "${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" tools/winlibs.R || {
+    echo "Error: Failed to build OpenSSL via tools/winlibs.R"
+    exit 1
+  }
+fi
+echo "Assuming OpenSSL in: ${OPENSSL_PREFIX}"
+
+
+# --- Build libssh statically ---
+echo "Configuring and building libssh static library..."
+
+# Clean previous build artifacts if they exist
+# Use -rf for recursive force removal
+rm -rf "${LIBSSH_BUILD_DIR}" || { echo "Error: Failed to remove existing libssh build directory."; exit 1; }
+
+# Create the build directory (like mkdir -p)
+mkdir -p "${LIBSSH_BUILD_DIR}" || { echo "Error: Failed to create libssh build directory."; exit 1; }
+
+# Determine the absolute path for CMake's install prefix
+# This needs to be an absolute path as CMake will use it directly.
+# pwd -P gives the absolute path without symlinks.
+CMAKE_INSTALL_PREFIX_ABS=$(pwd -P)/"${LIBSSH_INSTALL_DIR}"
+
+
+# CMake command to configure libssh for static build
+# IMPORTANT: When running cmake from within LIBSSH_BUILD_DIR, the source directory
+# is simply '../' (one level up).
+# -DCMAKE_INSTALL_PREFIX: Where libssh will be "installed" after building (within your package)
+# -DBUILD_SHARED_LIBS=OFF: Crucial for static build
+# -DWITH_EXAMPLES=OFF: Disable examples to reduce build size/time
+# -DWITH_GSSAPI=OFF: Often simplifies linking if GSSAPI is not needed
+# -DOPENSSL_ROOT_DIR: Tell CMake where to find OpenSSL
+(
+    # Change directory for cmake command
+    cd "${LIBSSH_BUILD_DIR}" || { echo "Error: Cannot change to libssh build directory."; exit 1; }
+    cmake.exe ../ \
+		-G "Unix Makefiles" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DWITH_EXAMPLES=OFF \
+        -DWITH_GSSAPI=OFF \
+        -DCMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX_ABS}" \
+        -DOPENSSL_ROOT_DIR="${OPENSSL_PREFIX}" \
+		-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF \
+        || { echo "Error: CMake configuration for libssh failed. Check configure.log for details."; exit 1; }
+)
+
+# Build libssh
+(
+    # Change directory for make command
+    cd "${LIBSSH_BUILD_DIR}" || { echo "Error: Cannot change to libssh build directory for make."; exit 1; }
+    make || { echo "Error: libssh compilation failed. Check configure.log for details."; exit 1; }
+)
+
+echo "libssh static library built successfully."
+
+# --- Determine paths for Makevars.win substitution ---
+# Path to libssh's static library file (typically in build/src/libssh.a)
+# This path is relative to the package root.
+LIBSSH_STATIC_LIB="src/${LIBSSH_SOURCE_DIR}/build/src/libssh.a"
+
+# Path to libssh's primary headers (from source tree)
+# This path is absolute, which is generally safer for -I flags.
+LIBSSH_INCLUDE_PATH="$(pwd -P)/src/${LIBSSH_SOURCE_DIR}/include"
+
+# NEW: Path to libssh's generated headers (from build tree)
+# This is where libssh_version.h is typically found.
+LIBSSH_GENERATED_INCLUDE_PATH="$(pwd -P)/src/${LIBSSH_SOURCE_DIR}/build/src"
+
+
+# Determine system-specific libraries for linking
+# These are common dependencies for libssh on Windows (MinGW-w64).
+# We link the built libssh.a, then OpenSSL, zlib, and Windows system libraries.
+# -L$(pwd -P)/src/${LIBSSH_SOURCE_DIR}/build/src: Points to where libssh.a is located.
+# -lssh: Links the libssh static library.
+# -L${OPENSSL_PREFIX}/lib: Points to OpenSSL libraries.
+# -lssl, -lcrypto: OpenSSL libraries.
+# -lz: Zlib library (often bundled with MinGW or needed separately).
+# -lws2_32: Windows Sockets API (for network communication).
+# -lcrypt32: Windows Cryptography API.
+PLATFORM_LIBS="-L$(pwd -P)/src/${LIBSSH_SOURCE_DIR}/build/src -lssh -L${OPENSSL_PREFIX}/lib -lssl -lcrypto -lz -lws2_32 -lcrypt32"
+
+
+# --- Generate src/Makevars.win from src/Makevars.in ---
+echo "Generating ${MAKEVARS_OUT_PATH}..."
+
+# Ensure src/Makevars.in exists
+if [ ! -f "${MAKEVARS_IN_PATH}" ]; then
+    echo "Error: The template file '${MAKEVARS_IN_PATH}' was not found."
+    echo "Please ensure 'src/Makevars.in' exists in your package."
+    exit 1
+fi
+
+# Use sed for stream editing to replace placeholders
+# Ensure paths are correctly escaped for sed if they contain special characters.
+# Using double quotes for variables in sed's s command to allow expansion.
+sed -e "s|@LIBSSH_INCLUDE_PATH@|${LIBSSH_INCLUDE_PATH}|g" \
+    -e "s|@LIBSSH_STATIC_LIB@|${LIBSSH_STATIC_LIB}|g" \
+    -e "s|@PLATFORM_LIBS@|${PLATFORM_LIBS}|g" \
+    -e "s|@LIBSSH_GENERATED_INCLUDE_PATH@|${LIBSSH_GENERATED_INCLUDE_PATH}|g" \
+    "${MAKEVARS_IN_PATH}" > "${MAKEVARS_OUT_PATH}" || { echo "Error: Failed to generate ${MAKEVARS_OUT_PATH}."; exit 1; }
+
+echo "${MAKEVARS_OUT_PATH} generated successfully."
+echo "Configure script finished."
+
+# --- Diagnostic Step: Print generated Makevars content ---
+echo ""
+echo "--- Contents of generated ${MAKEVARS_OUT_PATH} ---"
+cat "${MAKEVARS_OUT_PATH}"
+echo "------------------------------------------"
+
+exit 0
